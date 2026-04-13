@@ -4,6 +4,7 @@ import com.amazonaws.services.lambda.runtime.LambdaLogger;
 import com.example.zuora.client.ZuoraClient;
 import com.example.zuora.model.Invoice;
 import com.example.zuora.model.OrderEvent;
+import com.zuora.ApiException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -13,6 +14,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.time.LocalDate;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -27,8 +29,7 @@ class InvoiceCorrectionServiceTest {
 
     @BeforeEach
     void setUp() {
-        BillRunService billRunService = new BillRunService(zuoraClient, logger);
-        service = new InvoiceCorrectionService(zuoraClient, billRunService, logger);
+        service = new InvoiceCorrectionService(zuoraClient, logger);
     }
 
     @Test
@@ -43,8 +44,8 @@ class InvoiceCorrectionServiceTest {
 
         service.correct(event);
 
-        verify(zuoraClient).reverseInvoice(eq("inv-1"), eq("2024-03-15"));
-        verify(zuoraClient).createBillRun(eq("account-1"), eq("2024-03-15"));
+        verify(zuoraClient).reverseInvoice(eq("inv-1"), eq(LocalDate.of(2024, 3, 15)));
+        verify(zuoraClient).createBillRun(eq("account-1"), eq(LocalDate.of(2024, 3, 15)));
     }
 
     @Test
@@ -128,6 +129,82 @@ class InvoiceCorrectionServiceTest {
         verify(zuoraClient).reverseInvoice(eq("inv-2"), any());
         verify(zuoraClient, never()).reverseInvoice(eq("inv-3"), any());
         verify(zuoraClient, times(1)).createBillRun(any(), any());
+    }
+
+    @Test
+    void correct_boundaryDate_startDateIsIncluded() throws Exception {
+        OrderEvent event = orderEvent("account-1", "O-00000001");
+        LocalDate triggerDate = LocalDate.of(2024, 3, 1);
+        Invoice invoice = invoice("inv-1", "INV-001", LocalDate.of(2024, 3, 1), LocalDate.of(2024, 3, 31));
+
+        when(zuoraClient.getOrderTriggerDates("O-00000001")).thenReturn(List.of(triggerDate));
+        when(zuoraClient.getPostedInvoices("account-1")).thenReturn(List.of(invoice));
+        when(zuoraClient.createBillRun(any(), any())).thenReturn("br-1");
+
+        service.correct(event);
+
+        verify(zuoraClient).reverseInvoice(eq("inv-1"), eq(triggerDate));
+    }
+
+    @Test
+    void correct_boundaryDate_endDateIsIncluded() throws Exception {
+        OrderEvent event = orderEvent("account-1", "O-00000001");
+        LocalDate triggerDate = LocalDate.of(2024, 3, 31);
+        Invoice invoice = invoice("inv-1", "INV-001", LocalDate.of(2024, 3, 1), LocalDate.of(2024, 3, 31));
+
+        when(zuoraClient.getOrderTriggerDates("O-00000001")).thenReturn(List.of(triggerDate));
+        when(zuoraClient.getPostedInvoices("account-1")).thenReturn(List.of(invoice));
+        when(zuoraClient.createBillRun(any(), any())).thenReturn("br-1");
+
+        service.correct(event);
+
+        verify(zuoraClient).reverseInvoice(eq("inv-1"), eq(triggerDate));
+    }
+
+    @Test
+    void correct_invoiceWithNullServiceDates_isNotReversed() throws Exception {
+        OrderEvent event = orderEvent("account-1", "O-00000001");
+        Invoice invoice = invoice("inv-1", "INV-001", null, null);
+
+        when(zuoraClient.getOrderTriggerDates("O-00000001"))
+                .thenReturn(List.of(LocalDate.of(2024, 3, 15)));
+        when(zuoraClient.getPostedInvoices("account-1")).thenReturn(List.of(invoice));
+
+        service.correct(event);
+
+        verify(zuoraClient, never()).reverseInvoice(any(), any());
+        verify(zuoraClient, never()).createBillRun(any(), any());
+    }
+
+    @Test
+    void correct_reverseInvoiceThrows_propagatesExceptionAndSkipsBillRun() throws Exception {
+        OrderEvent event = orderEvent("account-1", "O-00000001");
+        Invoice invoice = invoice("inv-1", "INV-001", LocalDate.of(2024, 3, 1), LocalDate.of(2024, 3, 31));
+
+        when(zuoraClient.getOrderTriggerDates("O-00000001"))
+                .thenReturn(List.of(LocalDate.of(2024, 3, 15)));
+        when(zuoraClient.getPostedInvoices("account-1")).thenReturn(List.of(invoice));
+        doThrow(new ApiException("reversal failed")).when(zuoraClient).reverseInvoice(any(), any());
+
+        assertThrows(Exception.class, () -> service.correct(event));
+
+        verify(zuoraClient, never()).createBillRun(any(), any());
+    }
+
+    @Test
+    void correct_multipleTriggerDates_billRunUsesMinimumDate() throws Exception {
+        OrderEvent event = orderEvent("account-1", "O-00000001");
+        Invoice invoice = invoice("inv-1", "INV-001", LocalDate.of(2024, 3, 1), LocalDate.of(2024, 3, 31));
+
+        // 順序は意図的に逆順にして min が正しく取られることを確認
+        when(zuoraClient.getOrderTriggerDates("O-00000001"))
+                .thenReturn(List.of(LocalDate.of(2024, 5, 1), LocalDate.of(2024, 3, 15)));
+        when(zuoraClient.getPostedInvoices("account-1")).thenReturn(List.of(invoice));
+        when(zuoraClient.createBillRun(any(), any())).thenReturn("br-1");
+
+        service.correct(event);
+
+        verify(zuoraClient).createBillRun(eq("account-1"), eq(LocalDate.of(2024, 3, 15)));
     }
 
     // --- ヘルパー ---

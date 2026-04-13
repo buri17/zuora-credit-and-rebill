@@ -11,12 +11,10 @@ import java.util.List;
 public class InvoiceCorrectionService {
 
     private final ZuoraClient zuoraClient;
-    private final BillRunService billRunService;
     private final LambdaLogger logger;
 
-    public InvoiceCorrectionService(ZuoraClient zuoraClient, BillRunService billRunService, LambdaLogger logger) {
+    public InvoiceCorrectionService(ZuoraClient zuoraClient, LambdaLogger logger) {
         this.zuoraClient = zuoraClient;
-        this.billRunService = billRunService;
         this.logger = logger;
     }
 
@@ -25,6 +23,7 @@ public class InvoiceCorrectionService {
      * 1. オーダーの全 Order Action から triggerDate 一覧を取得
      * 2. いずれかの triggerDate がサービス期間に含まれる Posted 請求書を特定
      * 3. 各請求書に Invoice Reversal を実行（Credit Memo 自動生成 + 元請求書キャンセル）
+     *    ※ 非トランザクショナル操作。途中失敗時は例外を即伝搬し Bill Run は作成しない。
      * 4. Bill Run で再請求
      */
     public void correct(OrderEvent event) throws Exception {
@@ -56,18 +55,23 @@ public class InvoiceCorrectionService {
 
         logger.log("Found " + affected.size() + " affected invoice(s) for accountId=" + accountId);
 
-        String dateStr = triggerDates.stream().min(LocalDate::compareTo).orElseThrow().toString();
+        // Bill Run の invoiceDate/targetDate には triggerDate の最小値を使用する。
+        // 最小の変更発効日から再請求することで、その後のすべての期間をカバーできる。
+        LocalDate billRunDate = triggerDates.stream().min(LocalDate::compareTo).orElseThrow();
 
         for (Invoice invoice : affected) {
             logger.log("Reversing invoice: invoiceNumber=" + invoice.getInvoiceNumber()
                     + ", invoiceId=" + invoice.getId()
                     + ", serviceStartDate=" + invoice.getServiceStartDate()
                     + ", serviceEndDate=" + invoice.getServiceEndDate());
-            zuoraClient.reverseInvoice(invoice.getId(), dateStr);
+            zuoraClient.reverseInvoice(invoice.getId(), billRunDate);
             logger.log("Reversed: " + invoice.getInvoiceNumber());
         }
 
-        billRunService.createBillRun(accountId, dateStr);
+        logger.log("Creating bill run: accountId=" + accountId + ", date=" + billRunDate);
+        String billRunId = zuoraClient.createBillRun(accountId, billRunDate);
+        logger.log("Bill run created: billRunId=" + billRunId);
+
         logger.log("Correction completed for accountId=" + accountId);
     }
 }

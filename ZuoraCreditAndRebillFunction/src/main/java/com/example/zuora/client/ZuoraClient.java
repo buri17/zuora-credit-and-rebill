@@ -8,6 +8,8 @@ import com.zuora.model.BillingDocumentType;
 import com.zuora.model.BillRunFilter;
 import com.zuora.model.CreateBillRunRequest;
 import com.zuora.model.GetBillingDocumentsResponse;
+import com.zuora.model.InvoiceItemsResponse;
+import com.zuora.model.GetOrderResponse;
 import com.zuora.model.InvoiceItem;
 import com.zuora.model.Order;
 import com.zuora.model.ReverseInvoiceRequest;
@@ -52,10 +54,10 @@ public class ZuoraClient {
                 continue;
             }
 
-            List<InvoiceItem> items = sdk.invoicesApi()
+            InvoiceItemsResponse itemsResponse = sdk.invoicesApi()
                     .getInvoiceItemsApi(doc.getId())
-                    .execute()
-                    .getInvoiceItems();
+                    .execute();
+            List<InvoiceItem> items = itemsResponse != null ? itemsResponse.getInvoiceItems() : null;
 
             LocalDate startDate = null;
             LocalDate endDate = null;
@@ -86,7 +88,8 @@ public class ZuoraClient {
      * 呼び出し元はいずれかの日付がサービス期間に含まれる請求書を補正対象とする。
      */
     public List<LocalDate> getOrderTriggerDates(String orderNumber) throws ApiException {
-        Order order = sdk.ordersApi().getOrderApi(orderNumber).execute().getOrder();
+        GetOrderResponse orderResponse = sdk.ordersApi().getOrderApi(orderNumber).execute();
+        Order order = orderResponse != null ? orderResponse.getOrder() : null;
         if (order == null || order.getSubscriptions() == null) {
             return List.of();
         }
@@ -104,11 +107,10 @@ public class ZuoraClient {
     /**
      * Invoice Reversal を実行する。Credit Memo が自動生成され、元請求書がキャンセルされる。
      */
-    public void reverseInvoice(String invoiceId, String date) throws ApiException {
-        LocalDate localDate = LocalDate.parse(date);
+    public void reverseInvoice(String invoiceId, LocalDate date) throws ApiException {
         ReverseInvoiceRequest request = new ReverseInvoiceRequest()
-                .applyEffectiveDate(localDate)
-                .memoDate(localDate);
+                .applyEffectiveDate(date)
+                .memoDate(date);
         sdk.invoicesApi().reverseInvoiceApi(invoiceId, request).execute();
     }
 
@@ -117,19 +119,22 @@ public class ZuoraClient {
      *
      * @return 作成された Bill Run の ID
      */
-    public String createBillRun(String accountId, String date) throws ApiException {
-        LocalDate localDate = LocalDate.parse(date);
+    public String createBillRun(String accountId, LocalDate date) throws ApiException {
         BillRunFilter filter = new BillRunFilter()
                 .filterType(BillRunFilter.FilterTypeEnum.ACCOUNT)
                 .accountId(accountId);
         CreateBillRunRequest request = new CreateBillRunRequest()
                 .addBillRunFiltersItem(filter)
-                .invoiceDate(localDate)
-                .targetDate(localDate)
+                .invoiceDate(date)
+                .targetDate(date)
                 .autoEmail(false)
                 .autoPost(true)
                 .autoRenewal(false)
                 .noEmailForZeroAmountInvoice(true);
-        return sdk.billRunApi().createBillRunApi(request).execute().getId();
+        String billRunId = sdk.billRunApi().createBillRunApi(request).execute().getId();
+        if (billRunId == null) {
+            throw new IllegalStateException("Bill run created but response contained no ID");
+        }
+        return billRunId;
     }
 }

@@ -7,7 +7,6 @@ import com.amazonaws.services.lambda.runtime.events.APIGatewayProxyResponseEvent
 import com.example.zuora.client.ZuoraClient;
 import com.example.zuora.config.ZuoraConfig;
 import com.example.zuora.model.OrderEvent;
-import com.example.zuora.service.BillRunService;
 import com.example.zuora.service.InvoiceCorrectionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
@@ -21,11 +20,14 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 public class OrderEventHandler
         implements RequestHandler<APIGatewayProxyRequestEvent, APIGatewayProxyResponseEvent> {
 
-    private final ZuoraConfig config;
+    // ZuoraClient はウォームインボケーション間で共有する。
+    // これにより OAuth トークン取得のオーバーヘッドを低減する。
+    private final ZuoraClient zuoraClient;
     private final ObjectMapper objectMapper;
 
     public OrderEventHandler() {
-        this.config = new ZuoraConfig();
+        ZuoraConfig config = new ZuoraConfig();
+        this.zuoraClient = new ZuoraClient(config);
         this.objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
     }
 
@@ -34,11 +36,13 @@ public class OrderEventHandler
             APIGatewayProxyRequestEvent input, Context context) {
 
         try {
-            OrderEvent event = objectMapper.readValue(input.getBody(), OrderEvent.class);
+            String body = input.getBody();
+            if (body == null || body.isBlank()) {
+                return response(400, "{\"error\":\"missing request body\"}");
+            }
 
-            ZuoraClient zuoraClient = new ZuoraClient(config);
-            BillRunService billRunService = new BillRunService(zuoraClient, context.getLogger());
-            InvoiceCorrectionService service = new InvoiceCorrectionService(zuoraClient, billRunService, context.getLogger());
+            OrderEvent event = objectMapper.readValue(body, OrderEvent.class);
+            InvoiceCorrectionService service = new InvoiceCorrectionService(zuoraClient, context.getLogger());
 
             service.correct(event);
 
@@ -46,7 +50,7 @@ public class OrderEventHandler
 
         } catch (Exception e) {
             context.getLogger().log("Unhandled error: " + e.getMessage());
-            return response(500, "{\"error\":\"" + e.getMessage() + "\"}");
+            return response(500, "{\"error\":\"internal error\"}");
         }
     }
 

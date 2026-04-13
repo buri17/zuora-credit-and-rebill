@@ -1,0 +1,59 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  Zuora の Order.Completed イベントを受け取り、影響する請求書を
+  Invoice Reversal で取り消して Bill Run で再請求する Lambda。
+
+Parameters:
+  ZuoraEnv:
+    Type: String
+    Default: SBX
+    AllowedValues: [SBX, SBX_NA, SBX_EU, CSBX, PROD, PROD_NA, PROD_EU, PROD_AP]
+    Description: >
+      Zuora 接続先環境。ZuoraClient.ZuoraEnv enum の値を指定する。
+
+Globals:
+  Function:
+    Runtime: java21
+    Architectures: [x86_64]
+    MemorySize: 512
+    Timeout: 60
+
+Resources:
+  ZuoraCreditAndRebillFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: com.example.zuora.handler.OrderEventHandler::handleRequest
+      CodeUri: ZuoraCreditAndRebillFunction/
+      # SnapStart: Java の cold start を大幅に短縮する。
+      # Alias へのトラフィックにのみ適用されるため AutoPublishAlias が必要。
+      AutoPublishAlias: live
+      SnapStart:
+        ApplyOn: PublishedVersions
+      Environment:
+        Variables:
+          # SSM Parameter Store に事前登録が必要:
+          #   aws ssm put-parameter --name /zuora-credit-and-rebill/client-id \
+          #     --value "<CLIENT_ID>" --type String
+          #   aws ssm put-parameter --name /zuora-credit-and-rebill/client-secret \
+          #     --value "<CLIENT_SECRET>" --type SecureString
+          ZUORA_CLIENT_ID: '{{resolve:ssm:/zuora-credit-and-rebill/client-id}}'
+          ZUORA_CLIENT_SECRET: '{{resolve:ssm-secure:/zuora-credit-and-rebill/client-secret}}'
+          ZUORA_ENV: !Ref ZuoraEnv
+      Events:
+        ZuoraCallout:
+          Type: Api
+          Properties:
+            Path: /orders/completed
+            Method: POST
+    Metadata:
+      BuildMethod: gradle
+
+Outputs:
+  ApiEndpoint:
+    Description: Zuora callout 設定先エンドポイント URL
+    Value: !Sub 'https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/orders/completed'
+  FunctionArn:
+    Description: Lambda 関数 ARN
+    Value: !GetAtt ZuoraCreditAndRebillFunction.Arn
