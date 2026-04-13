@@ -47,8 +47,6 @@ Resources:
           Properties:
             Path: /orders/completed
             Method: POST
-    Metadata:
-      BuildMethod: gradle
 
 Outputs:
   ApiEndpoint:

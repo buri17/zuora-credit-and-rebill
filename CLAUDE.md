@@ -30,7 +30,7 @@ aws ssm put-parameter --name /zuora-credit-and-rebill/client-id \
 aws ssm put-parameter --name /zuora-credit-and-rebill/client-secret \
   --value "<CLIENT_SECRET>" --type SecureString
 
-# ビルド（BuildMethod: gradle で SAM が ./gradlew build を自動実行）
+# ビルド（java21 ネイティブビルダーが ZuoraCreditAndRebillFunction/gradlew build を自動実行）
 export JAVA_HOME=/home/buri17/.vscode/extensions/redhat.java-1.53.0-linux-x64/jre/21.0.10-linux-x86_64
 sam build
 
